@@ -1,0 +1,11 @@
+# Dependensi & Environment
+node_modules/
+.env
+
+# Abaikan semua file di dalam folder media, kecuali file .gitkeep
+/media/*
+!/media/.gitkeep
+
+# Abaikan semua file di dalam folder sessions, kecuali file .gitkeep
+/sessions/*
+!/sessions/.gitkeep
