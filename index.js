@@ -6,11 +6,14 @@ const fs = require("fs");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const errorHandler = require("./src/middleware/error.middleware");
-const { PORT, SESSIONS_DIR } = require("./src/config/constants");
+const { PORT, SESSIONS_DIR, TRUST_PROXY } = require("./src/config/constants");
 const { startSession } = require("./src/core/sessionManager");
 const apiRoutes = require("./src/routes/index");
 
 const app = express();
+if (TRUST_PROXY) {
+  app.set("trust proxy", TRUST_PROXY);
+}
 
 // ── Global Middleware ──────────────────────────────────────────────────────────
 app.use(morgan("dev")); // Logger untuk memantau request di terminal

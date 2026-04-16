@@ -6,4 +6,5 @@ module.exports = {
   API_KEY: process.env.API_KEY || null,
   SESSIONS_DIR: "./sessions",
   MEDIA_DIR: "./media",
+  TRUST_PROXY: process.env.TRUST_PROXY || false,
 };
