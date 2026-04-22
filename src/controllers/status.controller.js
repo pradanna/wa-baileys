@@ -70,4 +70,19 @@ async function getStatus(req, res) {
   });
 }
 
-module.exports = { getStatus };
+async function logout(req, res) {
+  const branchId = req.params.branch;
+  const { logoutSession } = require("../core/sessionManager");
+
+  try {
+    const result = await logoutSession(branchId);
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({
+      success: false,
+      error: "Gagal melakukan logout: " + err.message,
+    });
+  }
+}
+
+module.exports = { getStatus, logout };

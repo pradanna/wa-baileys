@@ -204,4 +204,34 @@ async function startSession(branchId) {
   });
 }
 
-module.exports = { activeSessions, startSession };
+async function logoutSession(branchId) {
+  const currentSession = activeSessions.get(branchId);
+  const authFolder = `${SESSIONS_DIR}/${branchId}`;
+  const mediaFolder = `${MEDIA_DIR}/${branchId}`;
+
+  console.log(`[${branchId}] 🚪 Melakukan logout manual...`);
+
+  if (currentSession && currentSession.sock) {
+    try {
+      await currentSession.sock.logout();
+    } catch (err) {
+      console.error(`[${branchId}] ❌ Gagal logout via Baileys (mungkin sudah diskonek):`, err.message);
+    }
+  }
+
+  // Tetap hapus folder meskipun logout via Baileys gagal
+  if (fs.existsSync(authFolder)) {
+    fs.rmSync(authFolder, { recursive: true, force: true });
+    console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} dihapus.`);
+  }
+
+  if (fs.existsSync(mediaFolder)) {
+    fs.rmSync(mediaFolder, { recursive: true, force: true });
+    console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} dihapus.`);
+  }
+
+  activeSessions.delete(branchId);
+  return { success: true, message: "Logout berhasil dan data dihapus." };
+}
+
+module.exports = { activeSessions, startSession, logoutSession };
