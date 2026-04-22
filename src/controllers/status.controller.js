@@ -39,10 +39,12 @@ async function getStatus(req, res) {
 
   // Sesi sudah aktif & terhubung
   if (sessionData.isConnected) {
+    const userPhone = sessionData.sock?.user?.id?.split(':')[0] || null;
     return res.json({
       success: true,
       status: "connected",
       message: `WhatsApp branch ${branchId} aktif ✅`,
+      phone: userPhone,
     });
   }
 
