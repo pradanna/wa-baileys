@@ -125,5 +125,23 @@ function getMessages(branchId, jid, limit = 50) {
     });
   });
 }
+function closeDatabase(branchId) {
+  return new Promise((resolve) => {
+    const db = dbConnections.get(branchId);
+    if (db) {
+      db.close((err) => {
+        if (err) {
+          console.error(`[DB] ❌ Gagal menutup database untuk ${branchId}:`, err.message);
+        } else {
+          console.log(`[DB] 🔒 Database untuk ${branchId} berhasil ditutup.`);
+        }
+        dbConnections.delete(branchId);
+        resolve();
+      });
+    } else {
+      resolve();
+    }
+  });
+}
 
-module.exports = { initDatabase, saveMessage, getMessages };
+module.exports = { initDatabase, saveMessage, getMessages, closeDatabase };

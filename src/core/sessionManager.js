@@ -36,7 +36,7 @@ async function startSession(branchId) {
     version,
     auth: state,
     logger: pino({ level: "silent" }),
-    browser: Browsers.macOS("Desktop"),
+    browser: Browsers.ubuntu("Chrome"),
     syncFullHistory: true,
   });
 
@@ -88,26 +88,37 @@ async function startSession(branchId) {
         statusCode !== DisconnectReason.loggedOut && statusCode !== 405;
 
       if (shouldReconnect) {
-        console.log(`[${branchId}] 🔁 Koneksi terputus, mencoba reconnect...`);
+        console.log(`[${branchId}] 🔁 Koneksi terputus, mencoba reconnect... (Reason: ${statusCode}, Error: ${lastDisconnect?.error?.message || lastDisconnect?.error})`);
         setTimeout(() => startSession(branchId), 2000);
       } else {
         console.log(`[${branchId}] ⛔ SESI LOGOUT. Menghapus data sesi...`);
         
-        // 1. Hapus Folder Auth (Sesi)
-        if (fs.existsSync(authFolder)) {
-          fs.rmSync(authFolder, { recursive: true, force: true });
-          console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} berhasil dihapus.`);
-        }
+        // 0. Tutup Database SQLite agar tidak lock file
+        db.closeDatabase(branchId).then(() => {
+          // 1. Hapus Folder Auth (Sesi)
+          if (fs.existsSync(authFolder)) {
+            try {
+              fs.rmSync(authFolder, { recursive: true, force: true });
+              console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} berhasil dihapus.`);
+            } catch (err) {
+              console.error(`[${branchId}] ❌ Gagal hapus folder sesi:`, err.message);
+            }
+          }
 
-        // 2. Hapus Folder Media (Gambar)
-        const mediaFolder = `${MEDIA_DIR}/${branchId}`;
-        if (fs.existsSync(mediaFolder)) {
-          fs.rmSync(mediaFolder, { recursive: true, force: true });
-          console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} berhasil dihapus.`);
-        }
+          // 2. Hapus Folder Media (Gambar)
+          const mediaFolder = `${MEDIA_DIR}/${branchId}`;
+          if (fs.existsSync(mediaFolder)) {
+            try {
+              fs.rmSync(mediaFolder, { recursive: true, force: true });
+              console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} berhasil dihapus.`);
+            } catch (err) {
+              console.error(`[${branchId}] ❌ Gagal hapus folder media:`, err.message);
+            }
+          }
 
-        activeSessions.delete(branchId);
-        console.log(`[${branchId}] 🔄 Siap menerima Scan QR baru.`);
+          activeSessions.delete(branchId);
+          console.log(`[${branchId}] 🔄 Siap menerima Scan QR baru.`);
+        });
       }
     } else if (connection === "open") {
       currentSession.isConnected = true;
@@ -219,15 +230,26 @@ async function logoutSession(branchId) {
     }
   }
 
+  // Tutup Database SQLite
+  await db.closeDatabase(branchId);
+
   // Tetap hapus folder meskipun logout via Baileys gagal
   if (fs.existsSync(authFolder)) {
-    fs.rmSync(authFolder, { recursive: true, force: true });
-    console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} dihapus.`);
+    try {
+      fs.rmSync(authFolder, { recursive: true, force: true });
+      console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} dihapus.`);
+    } catch (err) {
+      console.error(`[${branchId}] ❌ Gagal hapus folder sesi:`, err.message);
+    }
   }
 
   if (fs.existsSync(mediaFolder)) {
-    fs.rmSync(mediaFolder, { recursive: true, force: true });
-    console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} dihapus.`);
+    try {
+      fs.rmSync(mediaFolder, { recursive: true, force: true });
+      console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} dihapus.`);
+    } catch (err) {
+      console.error(`[${branchId}] ❌ Gagal hapus folder media:`, err.message);
+    }
   }
 
   activeSessions.delete(branchId);
