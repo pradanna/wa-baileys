@@ -3,7 +3,7 @@
 Dokumentasi ini ditujukan bagi tim Frontend / Backend IELC-CRM untuk mengonsumsi layanan WhatsApp Gateway.
 
 ## 🗝️ Autentikasi
-Setiap request (kecuali `/health`) **WAJIB** menyertakan API Key pada header HTTP:
+Setiap request ke `/api` **WAJIB** menyertakan API Key pada header HTTP:
 
 | Header | Value |
 | :--- | :--- |
@@ -15,7 +15,7 @@ Setiap request (kecuali `/health`) **WAJIB** menyertakan API Key pada header HTT
 ## 📡 Endpoints
 
 ### 1. Cek Status & QR Code
-Digunakan untuk mengecek apakah WhatsApp cabang tertentu sudah aktif atau butuh scan QR.
+Mengecek apakah WhatsApp cabang tertentu sudah aktif atau membutuhkan scan QR. Jika sesi belum ada, sistem akan menginisialisasi sesi baru secara otomatis.
 
 - **Method**: `GET`
 - **URL**: `/api/wa-status/:branch`
@@ -26,7 +26,8 @@ Digunakan untuk mengecek apakah WhatsApp cabang tertentu sudah aktif atau butuh 
 {
   "success": true,
   "status": "connected",
-  "message": "WhatsApp branch solo aktif ✅"
+  "message": "WhatsApp branch solo aktif ✅",
+  "phone": "62812345678"
 }
 ```
 
@@ -41,11 +42,28 @@ Digunakan untuk mengecek apakah WhatsApp cabang tertentu sudah aktif atau butuh 
 
 ---
 
-### 2. Ambil Riwayat Chat
-Mengambil 50 pesan terakhir antara cabang dengan nomor siswa tertentu dari database SQLite.
+### 2. Logout / Hapus Sesi Cabang
+Memutuskan koneksi WhatsApp dan membersihkan data sesi cabang secara aman.
+
+- **Method**: `DELETE`
+- **URL**: `/api/wa-status/:branch`
+- **Contoh**: `/api/wa-status/solo`
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Logout berhasil dan data dihapus."
+}
+```
+
+---
+
+### 3. Ambil Riwayat Chat
+Mengambil pesan riwayat antara cabang dengan nomor siswa dari database lokal SQLite.
 
 - **Method**: `GET`
-- **URL**: `/api/chat-history/:branch/:phone`
+- **URL**: `/api/chat-history/:branch/:phone?limit=50`
 - **Contoh**: `/api/chat-history/solo/62812345678`
 
 **Response:**
@@ -55,19 +73,21 @@ Mengambil 50 pesan terakhir antara cabang dengan nomor siswa tertentu dari datab
   "total": 50,
   "data": [
     {
-      "key": { "remoteJid": "62812345678@s.whatsapp.net", "fromMe": false, "id": "..." },
-      "message": { "conversation": "Halo, saya mau tanya kursus." },
-      "messageTimestamp": 1712589000
-    },
-    ...
+      "id": "3EB0ABC...",
+      "jid": "62812345678@s.whatsapp.net",
+      "fromMe": 0,
+      "content": "Halo, saya mau tanya kursus.",
+      "timestamp": 1712589000,
+      "media_url": "http://localhost:3000/media/solo/3EB0ABC.jpg"
+    }
   ]
 }
 ```
 
 ---
 
-### 3. Kirim Pesan Teks
-Mengirim pesan teks ke nomor tujuan.
+### 4. Kirim Pesan Teks
+Mengirim pesan teks ke nomor tujuan dengan simulasi pengetikan alami (*typing presence*) untuk melindungi nomor dari deteksi spam WhatsApp.
 
 - **Method**: `POST`
 - **URL**: `/api/send-message`
@@ -76,9 +96,38 @@ Mengirim pesan teks ke nomor tujuan.
 {
   "branch": "solo",
   "phone": "62812345678",
-  "message": "Halo, ini pesan dari CRM IELC."
+  "message": "Halo, ini pesan resmi dari IELC."
 }
 ```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Pesan berhasil terkirim!",
+  "data": { ... }
+}
+```
+
+---
+
+### 5. Akses Media Gambar / Lampiran
+Mengunduh atau menampilkan gambar lampiran chat. Endpoint ini terproteksi dari path traversal dan akses tanpa izin.
+
+- **Method**: `GET`
+- **URL**: `/media/:branch/:filename`
+- **Akses**:
+  - Mengirim header `x-api-key: <key>`, ATAU
+  - Menambahkan query parameter `?key=<key>` (misal: `/media/solo/xyz.jpg?key=secret`), ATAU
+  - Dipanggil langsung dari halaman web browser CRM yang domainnya telah didaftarkan pada `ALLOWED_ORIGINS`.
+
+---
+
+### 6. Health Check
+Pemeriksaan status server tanpa API key (untuk load balancer / uptime monitoring).
+
+- **Method**: `GET`
+- **URL**: `/health`
 
 ---
 
@@ -87,22 +136,24 @@ Mengirim pesan teks ke nomor tujuan.
 ```php
 use Illuminate\Support\Facades\Http;
 
+// Kirim pesan
 $response = Http::withHeaders([
     'x-api-key' => env('WA_GATEWAY_KEY'),
-])->post('http://vps-ip:3000/api/send-message', [
+])->post(env('WA_GATEWAY_URL') . '/api/send-message', [
     'branch' => 'solo',
     'phone' => '62812345678',
-    'message' => 'Halo dari CRM!',
+    'message' => 'Halo dari CRM IELC!',
 ]);
 
 if ($response->successful()) {
-    // Pesan terkirim
+    // Pesan berhasil terkirim
 }
 ```
 
 ---
 
-## ⚠️ Catatan Penting
-1. **Format Nomor**: Gunakan format internasional tanpa tanda `+` (contoh: `62812...`). Sistem juga mendukung format diawali `08...` (akan dikonversi otomatis ke `628...`).
-2. **Rate Limit**: API dibatasi maksimal **100 request per menit per IP**. Jika melebihi, akan mengembalikan status `429 Too Many Requests`.
-3. **Media**: Untuk saat ini, endpoint kirim pesan hanya mendukung teks. Gambar yang diterima dari siswa dapat diakses lewat URL yang ada di field `localImageUrl` pada history chat.
+## ⚠️ Catatan Keamanan & Operasional
+1. **Format Nama Cabang**: Gunakan huruf, angka, tanda hubung (`-`), atau underscore (`_`) antara 2 hingga 32 karakter (contoh: `solo`, `semarang_barat`).
+2. **Format Nomor**: Format internasional (contoh: `62812...`) atau format lokal `08...` (akan dinormalisasi otomatis ke `628...`).
+3. **Anti-Ban Protection**: Server otomatis menyimulasikan status *sedang mengetik* (*composing*) sebelum pesan dikirim untuk meniru perilaku manusia. Hindari *blasting* ratusan pesan dalam interval di bawah 3 detik.
+4. **Rate Limit**: API dibatasi maksimal **100 request per menit per IP**. Jika melebihi kuota, server mengembalikan status `429 Too Many Requests`.

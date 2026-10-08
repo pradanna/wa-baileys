@@ -1,24 +1,45 @@
 const qrcode = require("qrcode");
-const { activeSessions, startSession } = require("../core/sessionManager");
+const { activeSessions, startSession, logoutSession } = require("../core/sessionManager");
+const { isValidBranch } = require("../utils/validator");
+const { MAX_ACTIVE_SESSIONS } = require("../config/constants");
 
 /**
  * GET /api/wa-status/:branch
  *
  * Mengecek status koneksi WA untuk branch tertentu.
- * Jika sesi belum ada, otomatis memulai sesi baru.
- *
- * Response status:
- * - "initializing"    → Sesi sedang dalam proses start
- * - "waiting_for_scan"→ QR Code siap, menunggu scan dari HP
- * - "connected"       → WA sudah terhubung dan siap kirim/terima pesan
+ * Jika sesi belum ada, otomatis memulai sesi baru (dengan batas keamanan).
  */
 async function getStatus(req, res) {
   const branchId = req.params.branch;
 
-  // Jika sesi belum ada → mulai sesi baru
+  // 1. Validasi format nama branch (mencegah path traversal)
+  if (!isValidBranch(branchId)) {
+    return res.status(400).json({
+      success: false,
+      error: "Format nama branch tidak valid. Hanya diizinkan huruf, angka, underscore, dan dash (2-32 karakter).",
+    });
+  }
+
+  // 2. Jika sesi belum ada → verifikasi batas kapasitas sebelum memulai (DoS Protection)
   if (!activeSessions.has(branchId)) {
+    if (activeSessions.size >= MAX_ACTIVE_SESSIONS) {
+      return res.status(429).json({
+        success: false,
+        error: `Batas maksimum sesi WhatsApp aktif (${MAX_ACTIVE_SESSIONS}) telah tercapai. Harap logout sesi yang tidak aktif terlebih dahulu.`,
+      });
+    }
+
     activeSessions.set(branchId, { status: "starting" });
-    startSession(branchId);
+    try {
+      startSession(branchId);
+    } catch (err) {
+      activeSessions.delete(branchId);
+      return res.status(500).json({
+        success: false,
+        error: "Gagal memulai sesi WhatsApp: " + err.message,
+      });
+    }
+
     return res.json({
       success: true,
       status: "initializing",
@@ -39,7 +60,7 @@ async function getStatus(req, res) {
 
   // Sesi sudah aktif & terhubung
   if (sessionData.isConnected) {
-    const userPhone = sessionData.sock?.user?.id?.split(':')[0] || null;
+    const userPhone = sessionData.sock?.user?.id?.split(":")[0] || null;
     return res.json({
       success: true,
       status: "connected",
@@ -72,9 +93,18 @@ async function getStatus(req, res) {
   });
 }
 
+/**
+ * DELETE /api/wa-status/:branch (Logout)
+ */
 async function logout(req, res) {
   const branchId = req.params.branch;
-  const { logoutSession } = require("../core/sessionManager");
+
+  if (!isValidBranch(branchId)) {
+    return res.status(400).json({
+      success: false,
+      error: "Format nama branch tidak valid.",
+    });
+  }
 
   try {
     const result = await logoutSession(branchId);
@@ -82,7 +112,7 @@ async function logout(req, res) {
   } catch (err) {
     return res.status(500).json({
       success: false,
-      error: "Gagal melakukan logout: " + err.message,
+      error: "Gagal melakukan logout sesi: " + (process.env.NODE_ENV === "production" ? "Internal error" : err.message),
     });
   }
 }

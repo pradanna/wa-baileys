@@ -8,7 +8,9 @@ const {
 } = require("@whiskeysockets/baileys");
 const pino = require("pino");
 const fs = require("fs");
-const { SESSIONS_DIR, MEDIA_DIR, BASE_URL } = require("../config/constants");
+const path = require("path");
+const { SESSIONS_DIR, MEDIA_DIR, BASE_URL, WEBHOOK_SECRET } = require("../config/constants");
+const { isValidBranch } = require("../utils/validator");
 const db = require("./database");
 
 // Ambil config webhook dari .env
@@ -24,7 +26,17 @@ const activeSessions = new Map();
  * Memulai atau me-restart sesi WA untuk branch tertentu.
  */
 async function startSession(branchId) {
-  const authFolder = `${SESSIONS_DIR}/${branchId}`;
+  if (!isValidBranch(branchId)) {
+    throw new Error(`Invalid branch identifier: ${branchId}`);
+  }
+
+  const resolvedSessionsDir = path.resolve(SESSIONS_DIR);
+  const authFolder = path.resolve(resolvedSessionsDir, branchId);
+
+  // Verifikasi path traversal
+  if (!authFolder.startsWith(resolvedSessionsDir)) {
+    throw new Error("Security violation: Path traversal detected.");
+  }
 
   // Inisialisasi Database SQLite untuk branch ini
   db.initDatabase(branchId);
@@ -45,16 +57,16 @@ async function startSession(branchId) {
     qr: null,
     isConnected: false,
     status: "starting",
-    messages: [], // Kita tidak perlu load semua pesan ke RAM lagi!
+    messages: [],
   });
 
   // ── Event: Simpan credentials saat update ──
   sock.ev.on("creds.update", saveCreds);
 
-  // ── Event: Terima history pesan lama dari HP (Global & On-Demand) ──
+  // ── Event: Terima history pesan lama dari HP ──
   sock.ev.on("messaging-history.set", async ({ messages, isLatest }) => {
     console.log(`\n[${branchId}] 📦 Menerima ${messages.length} pesan history (isLatest: ${isLatest})`);
-    
+
     let savedCount = 0;
     try {
       for (const msg of messages) {
@@ -73,6 +85,7 @@ async function startSession(branchId) {
   sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
     const currentSession = activeSessions.get(branchId);
+    if (!currentSession) return;
 
     if (qr && qr !== currentSession.qr) {
       currentSession.qr = qr;
@@ -92,11 +105,11 @@ async function startSession(branchId) {
         setTimeout(() => startSession(branchId), 2000);
       } else {
         console.log(`[${branchId}] ⛔ SESI LOGOUT. Menghapus data sesi...`);
-        
+
         // 0. Tutup Database SQLite agar tidak lock file
         db.closeDatabase(branchId).then(() => {
-          // 1. Hapus Folder Auth (Sesi)
-          if (fs.existsSync(authFolder)) {
+          // 1. Hapus Folder Auth (Sesi) secara aman
+          if (fs.existsSync(authFolder) && authFolder.startsWith(resolvedSessionsDir)) {
             try {
               fs.rmSync(authFolder, { recursive: true, force: true });
               console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} berhasil dihapus.`);
@@ -105,9 +118,10 @@ async function startSession(branchId) {
             }
           }
 
-          // 2. Hapus Folder Media (Gambar)
-          const mediaFolder = `${MEDIA_DIR}/${branchId}`;
-          if (fs.existsSync(mediaFolder)) {
+          // 2. Hapus Folder Media (Gambar) secara aman
+          const resolvedMediaDir = path.resolve(MEDIA_DIR);
+          const mediaFolder = path.resolve(resolvedMediaDir, branchId);
+          if (fs.existsSync(mediaFolder) && mediaFolder.startsWith(resolvedMediaDir)) {
             try {
               fs.rmSync(mediaFolder, { recursive: true, force: true });
               console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} berhasil dihapus.`);
@@ -147,8 +161,7 @@ async function startSession(branchId) {
       // Deteksi & download gambar
       const isImage =
         msg.message?.imageMessage ||
-        msg.message?.extendedTextMessage?.contextInfo?.quotedMessage
-          ?.imageMessage;
+        msg.message?.extendedTextMessage?.contextInfo?.quotedMessage?.imageMessage;
 
       if (isImage) {
         if (!msg.key.fromMe)
@@ -164,20 +177,23 @@ async function startSession(branchId) {
             }
           );
 
-          const mediaFolder = `${MEDIA_DIR}/${branchId}`;
+          const resolvedMediaDir = path.resolve(MEDIA_DIR);
+          const mediaFolder = path.resolve(resolvedMediaDir, branchId);
           if (!fs.existsSync(mediaFolder)) {
             fs.mkdirSync(mediaFolder, { recursive: true });
           }
 
-          const fileName = `${msg.key.id}.jpg`;
-          const filePath = `${mediaFolder}/${fileName}`;
+          // Sanitasi nama file untuk mencegah path traversal via message ID
+          const sanitizedId = String(msg.key.id || Date.now()).replace(/[^a-zA-Z0-9_-]/g, "");
+          const fileName = `${sanitizedId}.jpg`;
+          const filePath = path.join(mediaFolder, fileName);
           fs.writeFileSync(filePath, buffer);
 
           msg.localImageUrl = `${BASE_URL}/media/${branchId}/${fileName}`;
           if (!msg.key.fromMe)
             console.log(`[${branchId}] ✅ Gambar disimpan: ${msg.localImageUrl}`);
         } catch (error) {
-          console.error(`[${branchId}] ❌ Gagal download gambar:`, error);
+          console.error(`[${branchId}] ❌ Gagal download gambar:`, error.message);
         }
       } else {
         if (!msg.key.fromMe)
@@ -193,32 +209,54 @@ async function startSession(branchId) {
       // 🌐 KIRIM WEBHOOK KE LARAVEL
       if (WEBHOOK_URL && !msg.key.fromMe) {
         const payload = {
-          phone: msg.key.remoteJid.split('@')[0],
-          message: msg.message?.conversation || 
-                   msg.message?.extendedTextMessage?.text || 
-                   (isImage ? '📸 [Gambar]' : 'Media/Lainnya'),
-          branch: branchId
+          phone: msg.key.remoteJid.split("@")[0],
+          message:
+            msg.message?.conversation ||
+            msg.message?.extendedTextMessage?.text ||
+            (isImage ? "📸 [Gambar]" : "Media/Lainnya"),
+          branch: branchId,
         };
 
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000); // 10 detik batas waktu
+
         fetch(WEBHOOK_URL, {
-          method: 'POST',
-          headers: { 
-            'Content-Type': 'application/json',
-            'X-API-KEY': API_KEY 
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-API-KEY": API_KEY,
+            ...(WEBHOOK_SECRET ? { "X-WEBHOOK-SECRET": WEBHOOK_SECRET } : {}),
           },
-          body: JSON.stringify(payload)
+          body: JSON.stringify(payload),
+          signal: controller.signal,
         })
-        .then(() => console.log(`[${branchId}] 🚀 Webhook berhasil dikirim ke Laravel.`))
-        .catch(err => console.error(`[${branchId}] ❌ Gagal kirim webhook:`, err.message));
+          .then(() => console.log(`[${branchId}] 🚀 Webhook berhasil dikirim ke Laravel.`))
+          .catch((err) => {
+            const isTimeout = err.name === "AbortError";
+            console.error(`[${branchId}] ❌ Gagal kirim webhook:`, isTimeout ? "Timeout (10s)" : err.message);
+          })
+          .finally(() => clearTimeout(timeout));
       }
     }
   });
 }
 
 async function logoutSession(branchId) {
+  if (!isValidBranch(branchId)) {
+    throw new Error(`Invalid branch identifier: ${branchId}`);
+  }
+
+  const resolvedSessionsDir = path.resolve(SESSIONS_DIR);
+  const resolvedMediaDir = path.resolve(MEDIA_DIR);
+  const authFolder = path.resolve(resolvedSessionsDir, branchId);
+  const mediaFolder = path.resolve(resolvedMediaDir, branchId);
+
+  // Verifikasi proteksi path traversal secara ketat
+  if (!authFolder.startsWith(resolvedSessionsDir) || !mediaFolder.startsWith(resolvedMediaDir)) {
+    throw new Error("Security violation: Path traversal detected.");
+  }
+
   const currentSession = activeSessions.get(branchId);
-  const authFolder = `${SESSIONS_DIR}/${branchId}`;
-  const mediaFolder = `${MEDIA_DIR}/${branchId}`;
 
   console.log(`[${branchId}] 🚪 Melakukan logout manual...`);
 
@@ -233,8 +271,8 @@ async function logoutSession(branchId) {
   // Tutup Database SQLite
   await db.closeDatabase(branchId);
 
-  // Tetap hapus folder meskipun logout via Baileys gagal
-  if (fs.existsSync(authFolder)) {
+  // Hapus folder sesi secara aman (hanya jika berada di dalam SESSIONS_DIR)
+  if (fs.existsSync(authFolder) && authFolder.startsWith(resolvedSessionsDir)) {
     try {
       fs.rmSync(authFolder, { recursive: true, force: true });
       console.log(`[${branchId}] 🗑️ Folder sesi ${authFolder} dihapus.`);
@@ -243,7 +281,8 @@ async function logoutSession(branchId) {
     }
   }
 
-  if (fs.existsSync(mediaFolder)) {
+  // Hapus folder media secara aman (hanya jika berada di dalam MEDIA_DIR)
+  if (fs.existsSync(mediaFolder) && mediaFolder.startsWith(resolvedMediaDir)) {
     try {
       fs.rmSync(mediaFolder, { recursive: true, force: true });
       console.log(`[${branchId}] 🗑️ Folder media ${mediaFolder} dihapus.`);
