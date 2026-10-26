@@ -7,6 +7,7 @@ const { isValidBranch, isValidPhone, normalizePhone } = require("../utils/valida
  */
 async function sendMessage(req, res) {
   const { branch, phone, message } = req.body;
+  const branchId = (branch || "solo").toLowerCase();
 
   // 1. Validasi input kelengkapan
   if (!branch || !phone || !message) {
@@ -17,7 +18,7 @@ async function sendMessage(req, res) {
   }
 
   // 2. Validasi format branch
-  if (!isValidBranch(branch)) {
+  if (!isValidBranch(branchId)) {
     return res.status(400).json({
       success: false,
       error: "Format nama branch tidak valid.",
@@ -48,7 +49,7 @@ async function sendMessage(req, res) {
   }
 
   // 5. Cek apakah sesi WA aktif & terhubung
-  const sessionData = activeSessions.get(branch);
+  const sessionData = activeSessions.get(branchId);
   if (!sessionData || !sessionData.isConnected) {
     return res.status(400).json({
       success: false,
@@ -75,7 +76,7 @@ async function sendMessage(req, res) {
     // 8. Kirim pesan via Baileys socket
     const sentMsg = await sessionData.sock.sendMessage(jid, { text: message.trim() });
 
-    console.log(`[${branch}] 📤 Pesan berhasil dikirim ke ${jid}`);
+    console.log(`[${branchId}] 📤 Pesan berhasil dikirim ke ${jid}`);
 
     // Tandai ID pesan ini sebagai kiriman API agar tidak memicu webhook duplikat ke CRM
     if (sentMsg?.key?.id && sentViaApiIds) {
@@ -84,7 +85,7 @@ async function sendMessage(req, res) {
     }
 
     // 9. Simpan pesan keluar ke SQLite
-    db.saveMessage(branch, sentMsg);
+    db.saveMessage(branchId, sentMsg);
 
     return res.json({
       success: true,

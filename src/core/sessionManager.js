@@ -12,6 +12,7 @@ const path = require("path");
 const { SESSIONS_DIR, MEDIA_DIR, BASE_URL, WEBHOOK_SECRET } = require("../config/constants");
 const { isValidBranch } = require("../utils/validator");
 const db = require("./database");
+const { extractContent } = require("./database");
 
 // Ambil config webhook dari .env
 const WEBHOOK_URL = process.env.WEBHOOK_URL || null;
@@ -251,10 +252,7 @@ async function startSession(branchId) {
 
         const payload = {
           phone: phoneDigits,
-          message:
-            msg.message?.conversation ||
-            msg.message?.extendedTextMessage?.text ||
-            (isImage ? "📸 [Gambar]" : "Media/Lainnya"),
+          message: extractContent(msg) || (isImage ? "📷 [Gambar]" : "Pesan"),
           branch: branchId,
           fromMe: isFromMe,
           sender: isFromMe ? "admin" : "contact",

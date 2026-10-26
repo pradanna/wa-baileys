@@ -65,6 +65,36 @@ function initDatabase(branchId) {
  * @param {object} msg - Objek pesan Baileys
  * @param {string} forcedJid - (Opsional) JID paksaan untuk sinkronisasi history
  */
+/**
+ * Ekstraksi konten teks atau deskripsi pesan dari objek pesan Baileys.
+ * Mendukung unwrap pesan ephemeral, view once, dokumen, media, stiker, dll.
+ */
+function extractContent(msg) {
+  if (!msg || !msg.message) return "";
+
+  let m = msg.message;
+  if (m.ephemeralMessage?.message) m = m.ephemeralMessage.message;
+  if (m.viewOnceMessage?.message) m = m.viewOnceMessage.message;
+  if (m.viewOnceMessageV2?.message) m = m.viewOnceMessageV2.message;
+  if (m.documentWithCaptionMessage?.message) m = m.documentWithCaptionMessage.message;
+
+  if (m.conversation) return m.conversation;
+  if (m.extendedTextMessage?.text) return m.extendedTextMessage.text;
+  if (m.imageMessage?.caption) return m.imageMessage.caption;
+  if (m.videoMessage?.caption) return m.videoMessage.caption;
+  if (m.documentMessage?.caption) return m.documentMessage.caption;
+
+  if (m.imageMessage) return "📷 [Gambar]";
+  if (m.videoMessage) return "🎥 [Video]";
+  if (m.audioMessage) return "🎵 [Audio/Voice Note]";
+  if (m.stickerMessage) return "🏷️ [Stiker]";
+  if (m.documentMessage) return `📄 ${m.documentMessage.fileName || "[Dokumen]"}`;
+  if (m.contactMessage || m.contactsArrayMessage) return "👤 [Kontak]";
+  if (m.locationMessage) return "📍 [Lokasi]";
+
+  return "[Pesan]";
+}
+
 function saveMessage(branchId, msg, forcedJid = null) {
   return new Promise((resolve, reject) => {
     if (!isValidBranch(branchId)) {
@@ -85,12 +115,7 @@ function saveMessage(branchId, msg, forcedJid = null) {
     const fromMe = msg.key.fromMe ? 1 : 0;
 
     // Ambil konten teks atau caption gambar
-    const content =
-      msg.message?.conversation ||
-      msg.message?.extendedTextMessage?.text ||
-      msg.message?.imageMessage?.caption ||
-      (msg.message?.imageMessage ? "" : null) ||
-      "[Pesan Lain]";
+    const content = extractContent(msg);
 
     // Ambil media URL jika ada
     const mediaUrl = msg.localImageUrl || null;
@@ -131,13 +156,18 @@ function getMessages(branchId, jid, limit = 50) {
       return reject(new Error(`Invalid branch: ${branchId}`));
     }
 
-    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 300);
     const db = initDatabase(branchId);
 
-    // Stable Sort: timestamp DESC, rowid DESC untuk pesan di detik yang sama
-    const sql = `SELECT id, jid, fromMe, content, timestamp, media_url FROM messages WHERE jid = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?`;
+    const phoneDigits = jid.split("@")[0].replace(/[^0-9]/g, "");
+    const suffix = phoneDigits.length >= 8 ? phoneDigits.slice(-8) : phoneDigits;
+    const jidPattern = `%${suffix}@s.whatsapp.net`;
 
-    db.all(sql, [jid, safeLimit], (err, rows) => {
+    // Stable Sort: timestamp DESC, rowid DESC untuk pesan di detik yang sama
+    // Query fleksibel: cocokkan JID persis ATAU berakhiran nomor telepon yang sama
+    const sql = `SELECT id, jid, fromMe, content, timestamp, media_url FROM messages WHERE (jid = ? OR jid LIKE ?) ORDER BY timestamp DESC, rowid DESC LIMIT ?`;
+
+    db.all(sql, [jid, jidPattern, safeLimit], (err, rows) => {
       if (err) return reject(err);
 
       // Balik urutannya agar [Terlama -> Terbaru] untuk tampilan chat UI
@@ -169,4 +199,4 @@ function closeDatabase(branchId) {
   });
 }
 
-module.exports = { initDatabase, saveMessage, getMessages, closeDatabase };
+module.exports = { initDatabase, saveMessage, getMessages, closeDatabase, extractContent };

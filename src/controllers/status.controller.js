@@ -10,7 +10,7 @@ const { MAX_ACTIVE_SESSIONS } = require("../config/constants");
  * Jika sesi belum ada, otomatis memulai sesi baru (dengan batas keamanan).
  */
 async function getStatus(req, res) {
-  const branchId = req.params.branch;
+  const branchId = (req.params.branch || "solo").toLowerCase();
 
   // 1. Validasi format nama branch (mencegah path traversal)
   if (!isValidBranch(branchId)) {

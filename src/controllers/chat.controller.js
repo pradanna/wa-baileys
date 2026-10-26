@@ -7,9 +7,10 @@ const { isValidBranch, isValidPhone, normalizePhone } = require("../utils/valida
  */
 async function getChatHistory(req, res) {
   const { branch, phone } = req.params;
+  const branchId = (branch || "solo").toLowerCase();
 
   // 1. Validasi nama branch
-  if (!isValidBranch(branch)) {
+  if (!isValidBranch(branchId)) {
     return res.status(400).json({
       success: false,
       error: "Format nama branch tidak valid.",
@@ -24,24 +25,16 @@ async function getChatHistory(req, res) {
     });
   }
 
-  // 3. Cek apakah sesi aktif
-  const sessionData = activeSessions.get(branch);
-  if (!sessionData) {
-    return res.status(400).json({
-      success: false,
-      error: `Sistem WA branch "${branch}" sedang tidak aktif.`,
-    });
-  }
-
   try {
     // Normalisasi nomor: ubah 08xxx → 628xxx
     const normalized = normalizePhone(phone);
     const jid = `${normalized}@s.whatsapp.net`;
 
-    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 100);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 300);
 
     // Ambil dari Database Lokal (SQLite)
-    const messages = await db.getMessages(branch, jid, limit);
+    // Tetap bisa membaca riwayat chat meskipun sesi WA sedang reconnecting
+    const messages = await db.getMessages(branchId, jid, limit);
 
     return res.json({
       success: true,
