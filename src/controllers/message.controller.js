@@ -1,4 +1,4 @@
-const { activeSessions } = require("../core/sessionManager");
+const { activeSessions, sentViaApiIds } = require("../core/sessionManager");
 const db = require("../core/database");
 const { isValidBranch, isValidPhone, normalizePhone } = require("../utils/validator");
 
@@ -76,6 +76,12 @@ async function sendMessage(req, res) {
     const sentMsg = await sessionData.sock.sendMessage(jid, { text: message.trim() });
 
     console.log(`[${branch}] 📤 Pesan berhasil dikirim ke ${jid}`);
+
+    // Tandai ID pesan ini sebagai kiriman API agar tidak memicu webhook duplikat ke CRM
+    if (sentMsg?.key?.id && sentViaApiIds) {
+      sentViaApiIds.add(sentMsg.key.id);
+      setTimeout(() => sentViaApiIds.delete(sentMsg.key.id), 60000);
+    }
 
     // 9. Simpan pesan keluar ke SQLite
     db.saveMessage(branch, sentMsg);

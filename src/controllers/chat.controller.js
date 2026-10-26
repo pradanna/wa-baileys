@@ -57,4 +57,51 @@ async function getChatHistory(req, res) {
   }
 }
 
-module.exports = { getChatHistory };
+
+/**
+ * DELETE /api/chat-history/clear-all
+ */
+async function clearAllMessages(req, res) {
+  try {
+    const { SESSIONS_DIR } = require("../config/constants");
+    const fs = require("fs");
+    const path = require("path");
+    const sqlite3 = require("sqlite3").verbose();
+
+    const resolvedSessionsDir = path.resolve(SESSIONS_DIR);
+    if (fs.existsSync(resolvedSessionsDir)) {
+      const sessions = fs.readdirSync(resolvedSessionsDir);
+      for (const sess of sessions) {
+        const sessPath = path.join(resolvedSessionsDir, sess);
+        if (fs.statSync(sessPath).isDirectory()) {
+          const dbPath = path.join(sessPath, "database.sqlite");
+          if (fs.existsSync(dbPath)) {
+            await new Promise((resolve) => {
+              const tempDb = new sqlite3.Database(dbPath);
+              tempDb.serialize(() => {
+                tempDb.run("DELETE FROM messages", () => {
+                  tempDb.run("VACUUM", () => {
+                    tempDb.close(() => resolve());
+                  });
+                });
+              });
+            });
+          }
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: "Semua pesan di database wa-baileys berhasil dihapus.",
+    });
+  } catch (error) {
+    console.error("[API] ❌ Error clear all messages:", error.message);
+    return res.status(500).json({
+      success: false,
+      error: "Gagal menghapus pesan: " + error.message,
+    });
+  }
+}
+
+module.exports = { getChatHistory, clearAllMessages };

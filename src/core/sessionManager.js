@@ -23,6 +23,12 @@ const API_KEY = process.env.API_KEY || null;
 const activeSessions = new Map();
 
 /**
+ * Set untuk melacak ID pesan yang dikirim via Web CRM API
+ * agar webhook tidak mengirim duplikat ke CRM.
+ */
+const sentViaApiIds = new Set();
+
+/**
  * Memulai atau me-restart sesi WA untuk branch tertentu.
  */
 async function startSession(branchId) {
@@ -144,18 +150,33 @@ async function startSession(branchId) {
 
   // ── Event: Tangkap & simpan pesan baru ──
   sock.ev.on("messages.upsert", async (m) => {
-    // Hanya proses pesan baru (bukan history sync)
-    if (m.type !== "notify") return;
+    // Terima pesan baru ('notify') maupun sinkronisasi reconnect ('append')
+    if (m.type !== "notify" && m.type !== "append") return;
 
     for (const msg of m.messages) {
       if (!msg.message) continue;
 
-      // Blokir WA Story
-      if (msg.key.remoteJid === "status@broadcast") continue;
+      let remoteJid = msg.key.remoteJid || "";
+
+      // Blokir WA Story, Group WA (@g.us), dan Channel / Newsletter (@newsletter)
+      if (
+        remoteJid === "status@broadcast" ||
+        remoteJid.endsWith("@g.us") ||
+        remoteJid.endsWith("@newsletter")
+      ) {
+        continue;
+      }
 
       // Tangani LID addressing (WA baru) → kembalikan ke nomor asli
       if (msg.key.addressingMode === "lid" && msg.key.remoteJidAlt) {
         msg.key.remoteJid = msg.key.remoteJidAlt;
+        remoteJid = msg.key.remoteJidAlt;
+      }
+
+      // Jika masih berupa LID tanpa nomor telepon asli, lewati webhook
+      if (remoteJid.endsWith("@lid") && !remoteJid.endsWith("@s.whatsapp.net")) {
+        db.saveMessage(branchId, msg);
+        continue;
       }
 
       // Deteksi & download gambar
@@ -198,23 +219,47 @@ async function startSession(branchId) {
       } else {
         if (!msg.key.fromMe)
           console.log(
-            `\n[${branchId}] 📥 PESAN TEKS MASUK DARI: ${msg.key.remoteJid}`
+            `\n[${branchId}] 📥 PESAN TEKS MASUK DARI: ${remoteJid}`
           );
       }
 
       // 🔥 SIMPAN KE SQLITE
-      console.log(`[${branchId}] 📥 PESAN MASUK DARI WA: ${msg.key.id} (${msg.key.remoteJid})`);
+      const logDirection = msg.key.fromMe ? "PESAN KELUAR (HP)" : "PESAN MASUK";
+      console.log(`[${branchId}] 📥 ${logDirection}: ${msg.key.id} (${remoteJid})`);
       db.saveMessage(branchId, msg);
 
       // 🌐 KIRIM WEBHOOK KE LARAVEL
-      if (WEBHOOK_URL && !msg.key.fromMe) {
+      if (WEBHOOK_URL) {
+        const messageId = msg.key.id;
+        const isFromMe = !!msg.key.fromMe;
+
+        // Jika pesan ini dikirim dari Web CRM API, Web CRM sudah mencatatnya secara lokal.
+        // Webhook HANYA dikirim jika:
+        // 1. Pesan masuk dari kontak (!isFromMe)
+        // 2. Pesan keluar yang diketik LANGSUNG dari HP WhatsApp (!sentViaApiIds.has(messageId))
+        if (isFromMe && sentViaApiIds.has(messageId)) {
+          sentViaApiIds.delete(messageId);
+          continue;
+        }
+
+        const phoneDigits = remoteJid.split("@")[0].replace(/[^0-9]/g, "");
+
+        // Abaikan jika bukan format nomor HP pribadi yang valid (panjang 8-15 digit)
+        if (!phoneDigits || phoneDigits.length < 8 || phoneDigits.length > 15) {
+          continue;
+        }
+
         const payload = {
-          phone: msg.key.remoteJid.split("@")[0],
+          phone: phoneDigits,
           message:
             msg.message?.conversation ||
             msg.message?.extendedTextMessage?.text ||
             (isImage ? "📸 [Gambar]" : "Media/Lainnya"),
           branch: branchId,
+          fromMe: isFromMe,
+          sender: isFromMe ? "admin" : "contact",
+          messageId: messageId,
+          mediaUrl: msg.localImageUrl || null,
         };
 
         const controller = new AbortController();
@@ -230,7 +275,7 @@ async function startSession(branchId) {
           body: JSON.stringify(payload),
           signal: controller.signal,
         })
-          .then(() => console.log(`[${branchId}] 🚀 Webhook berhasil dikirim ke Laravel.`))
+          .then(() => console.log(`[${branchId}] 🚀 Webhook berhasil dikirim ke Laravel (${isFromMe ? 'HP/Admin' : 'Contact'}).`))
           .catch((err) => {
             const isTimeout = err.name === "AbortError";
             console.error(`[${branchId}] ❌ Gagal kirim webhook:`, isTimeout ? "Timeout (10s)" : err.message);
@@ -295,4 +340,4 @@ async function logoutSession(branchId) {
   return { success: true, message: "Logout berhasil dan data dihapus." };
 }
 
-module.exports = { activeSessions, startSession, logoutSession };
+module.exports = { activeSessions, startSession, logoutSession, sentViaApiIds };
